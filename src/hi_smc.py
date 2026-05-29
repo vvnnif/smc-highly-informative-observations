@@ -18,41 +18,10 @@ from numba import njit, prange
 from concurrent.futures import ProcessPoolExecutor
 numba.config.FULL_TRACEBACKS = True
 
-from util import *
-from ssm import *
-from pf import *
-from pmmh import *
-
-
-@njit
-def ess(cur_log_pos, nxt_log_pos):
-    """Compute the effective sample size for the set
-    of weights the log of which is given by nxt_log_pos - cur_log_pos.
-    
-    Parameters
-    -
-    cur_log_opos  : ndarray of size (N,)
-                    List of logs of evaluations of the 'proposal distribution'
-                    (up to proportionality) in a set of sample points.
-    nxt_log_pos   : ndarray of size (N,)
-                    List of logs of evaluations of the 'true distribution'
-                    (up to proportionality) in a set of sample points.
-    
-    Comments
-    -
-    Works in log-scale to avoid numerical difficulties.
-    """
-    
-    cur = np.asarray(cur_log_pos)
-    nxt = np.asarray(nxt_log_pos)
-
-    log_w = nxt - cur
-
-    m = np.max(log_w)
-    w = np.exp(log_w - m)
-    w = w / np.sum(w)
-
-    return 1.0 / np.sum(w**2)
+from src.util import *
+from src.ssm import *
+from src.pf import *
+from src.pmmh import *
 
 
 @njit

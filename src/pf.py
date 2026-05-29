@@ -1,8 +1,8 @@
 import numpy as np
 import numba
 from numba import njit, prange
-from util import *
-from ssm import *
+from src.util import *
+from src.ssm import *
 
 
 @njit

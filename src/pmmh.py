@@ -1,8 +1,8 @@
 import numpy as np
 import numba
 from numba import njit, prange
-from util import *
-from pf import particle_filter
+from src.util import *
+from src.pf import particle_filter
 
 
 """ Implementation of particle Metropolis-Hastings (PMH)
