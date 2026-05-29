@@ -3,6 +3,7 @@ observations: a tempered Sequential Monte Carlo solution" for the seminar "Seque
 
 File structure:
 
+```bash
 smc-highly-informative-observations
 ├── notebooks
 │   ├── experiments.ipynb
@@ -25,3 +26,4 @@ smc-highly-informative-observations
     ├── pmmh.py
     ├── ssm.py
     └── util.py
+```
