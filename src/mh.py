@@ -2,7 +2,104 @@ import numpy as np
 import numba
 from numba import njit, prange
 from src.util import *
-from src.pf import particle_filter
+from src.pf import *
+from src.ssm import *
+
+
+""" Implementation of standard Metropolis-Hastings for the linear
+    state-space model from Svensson et al. (2017)
+"""
+
+def Svensson2017LinearSSM_mh(initial_theta, temp, ys, us, n_iters=1, proposal_sd=0.01, verbose=False):
+    """Draw samples from the posterior ``p(theta|y_1:T,lambda)`` 
+    of the tempered linear-Gaussian state space model described 
+    in Svensson et al. (2017)  using a random-walk 
+    Metropolis-Hastings algorithm with a bivariate normal proposal.
+    
+    Parameters
+    -
+    initial_theta : float
+                    Initial point from whence to construct the
+                    Metropolis-Hastings Markov chain.
+    temp          : float
+                    Tempering parameter of the distribution to sample
+                    from.
+    ys            : ndarray of shape (T,)
+                    List of observations on which the distribution to
+                    sample from is conditioned.
+    n_iters       : int, default=1
+                    Number of iterations to run the Metropolis-Hastings
+                    algorithm for.
+    proposal_sd   : float, default=0.01
+                    Standard deviation of the proposal distribution.
+    verbose       : Boolean, default=False
+                    Whether or not to print additional diagnostic information
+                    while running the algorithm
+    """
+    
+    if(verbose):
+        print(f'Starting Metropolis-Hastings run\n \
+                Parameters: \n \
+                initial position = {initial_theta}\n \
+                tempering        = {temp}\n \
+                iterations       = {n_iters}\n \
+                proposal_sd      = {proposal_sd}')
+    samples = np.zeros((n_iters,2))
+    samples[0,:] = initial_theta
+    # Cache the log-likelihood so it doesn't have to be computed
+    # twice each loop
+    current_log_posterior = Svensson2017LinearSSM_loglik(ys=ys, us=us, theta=initial_theta, temp=temp) \
+                          + Svensson2017LinearSSM_log_prior(initial_theta)
+    n_accepts = 0
+    for i in range(1, n_iters):
+        y = samples[i-1,:]
+        # Random walk Metropolis-Hastings with multivariate normal proposal
+        z = np.random.multivariate_normal(y, proposal_sd**2 * np.eye(2))
+        d = np.random.uniform(0, 1)
+        new_log_posterior = Svensson2017LinearSSM_loglik(ys=ys, us=us, theta=z, temp=temp) \
+                          + Svensson2017LinearSSM_log_prior(z)
+        # Compute acceptance probability in log scale to avoid underflow
+        log_alpha = new_log_posterior - current_log_posterior
+        if np.log(d) < min(log_alpha, 0):
+            samples[i] = z
+            current_log_posterior = new_log_posterior
+            n_accepts += 1
+        else:
+            samples[i] = y
+    if(verbose):
+        print(f'Finished Metropolis-Hastings run \n \
+                Acceptance rate: {n_accepts / n_iters}')
+    return samples
+
+
+def Svensson2017LinearSSM_log_prior(theta):
+    """Returns the log of the prior distribution on the parameter.
+    The prior is uniform on [0,2.5] x [-2.5,0].
+
+    Parameters
+    -
+    theta : float
+            Point at which to evaluate the log of the prior.
+    """
+    if 0 <= theta[0] <= 2.5 and -2.5 <= theta[1] <= 0:
+        return 0.0
+    else:
+        return -np.inf
+    
+
+def Svensson2017LinearSSM_sample_prior(size=1):
+    """Samples points from the prior distribution on theta.
+    The prior is the uniform distribution on [0,2.5] x [-2.5,0].
+    
+    Parameters
+    -
+    size : int
+           Number of points to sample.
+    """
+    if size == 1:
+        return np.asarray([np.random.uniform(0, 2.5), np.random.uniform(-2.5,0)])
+    else:
+        return np.asarray([[np.random.uniform(0, 2.5), np.random.uniform(-2.5,0)] for _ in range(size)])
 
 
 """ Implementation of particle Metropolis-Hastings (PMH)
@@ -10,7 +107,7 @@ for this state-space model.
 """
 
 @njit
-def log_prior(theta):
+def Svensson2017NonLinearSSM_log_prior(theta):
     """Compute prior probability of observing
     parameter theta.
     
@@ -25,7 +122,7 @@ def log_prior(theta):
         return -np.inf
 
 @njit
-def sample_prior(n=1):
+def Svensson2017NonLinearSSM_sample_prior(n=1):
     """Sample from uniform prior
     on theta.
     
@@ -38,7 +135,7 @@ def sample_prior(n=1):
 
 
 @njit
-def particle_metropolis_hastings(
+def Svensson2017NonLinearSSM_pmmh(
     theta, 
     xs,
     aas,
@@ -127,7 +224,7 @@ def particle_metropolis_hastings(
         ])
         
         # Run particle filter using this new parameter value
-        new_xss, new_aass, new_log_lik = particle_filter(
+        new_xss, new_aass, new_log_lik = Svensson2017NonLinearSSM_bootstrap_pf(
                                     temp=temp,
                                     n_particles=n_particles,
                                     ys=ys,
@@ -139,8 +236,8 @@ def particle_metropolis_hastings(
         d = np.random.uniform(0,1)
         
         # Compute log of the acceptance probability
-        log_alpha = new_log_lik + log_prior(new_theta) - \
-                    log_lik - log_prior(thetas[i-1])
+        log_alpha = new_log_lik + Svensson2017NonLinearSSM_log_prior(new_theta) - \
+                    log_lik - Svensson2017NonLinearSSM_log_prior(thetas[i-1])
         
         # If d < min(alpha,1), keep thetas[i], xss[:,:,i], aas[:,:,i] the same.
         # Otherwise, change them back to their previous values.
@@ -162,7 +259,7 @@ def particle_metropolis_hastings(
 
 
 @njit
-def adaptive_particle_metropolis_hastings(
+def Svensson2017NonLinearSSM_pmmh_adaptive(
     theta, 
     xs,
     aas,
@@ -225,7 +322,10 @@ def adaptive_particle_metropolis_hastings(
     T = len(ys) # Number of observations
     n_particles = xs.shape[0] # Number of particles
     n_accepts = 0 # Keep track of acceptance rate
-    var = 0.01 + temp # Observation variance after tempering
+    
+    var = 0.01
+    if alternative_tempering == False: # Do not change this when power tempering
+        var += temp # Observation variance after tempering
     
     # Keep track of all samples, including the initial sample
     thetas = np.zeros(shape=(n_iters+1,2))
@@ -257,7 +357,7 @@ def adaptive_particle_metropolis_hastings(
         ])
         
         # Run particle filter using this new parameter value
-        new_xss, new_aass, new_log_lik = particle_filter(
+        new_xss, new_aass, new_log_lik = Svensson2017NonLinearSSM_bootstrap_pf(
                                     temp=temp,
                                     n_particles=n_particles,
                                     ys=ys,
@@ -269,8 +369,8 @@ def adaptive_particle_metropolis_hastings(
         d = np.random.uniform(0,1)
         
         # Compute log of the acceptance probability
-        log_alpha = new_log_lik + log_prior(new_theta) - \
-                    log_lik - log_prior(thetas[i-1])
+        log_alpha = new_log_lik + Svensson2017NonLinearSSM_log_prior(new_theta) - \
+                    log_lik - Svensson2017NonLinearSSM_log_prior(thetas[i-1])
         
         # If d < min(alpha,1), keep thetas[i], xss[:,:,i], aas[:,:,i] the same.
         # Otherwise, change them back to their previous values.

@@ -6,7 +6,7 @@ from src.ssm import *
 
 
 @njit
-def particle_filter(temp, n_particles, ys, us, theta, alternative_tempering=False):
+def Svensson2017NonLinearSSM_bootstrap_pf(temp, n_particles, ys, us, theta, alternative_tempering=False):
     """ Bootstrap particle filter for the nonlinear
     state-space model defined above.
     
@@ -63,9 +63,11 @@ def particle_filter(temp, n_particles, ys, us, theta, alternative_tempering=Fals
     for i in range(n_particles):
         
         if alternative_tempering == False:
-            log_w[i] = normal_logpdf(ys[0], loc=g(xs[i,0],theta), scale=var)
+            log_w[i] = normal_logpdf(ys[0], loc=Svensson2017NonLinearSSM_observation_mean(xs[i,0],theta), 
+                                            scale=var)
         else: # Alternatively, weigh according to f(y_1|x_1,theta,temp) = f(y_1|x_1,theta)^(1/temp)
-            log_w[i] = normal_logpdf(ys[0], loc=g(xs[i,0],theta), scale=var) / temp
+            log_w[i] = normal_logpdf(ys[0], loc=Svensson2017NonLinearSSM_observation_mean(xs[i,0],theta), 
+                                            scale=var) / temp
     
     # Iterate over timesteps
     lse = logsumexp(log_w) # Store logsumexp, use later
@@ -83,15 +85,19 @@ def particle_filter(temp, n_particles, ys, us, theta, alternative_tempering=Fals
             
             # Extend
             xs[i,t] = np.random.normal(
-                                    loc=f(xs[aas[i,t-1],t-1],
-                                    theta=theta,
-                                    u=us[t-1]),
-                                    scale=1)
+                                    loc=Svensson2017NonLinearSSM_transition_mean(
+                                        xs[aas[i,t-1],t-1],
+                                        theta=theta,
+                                        u=us[t-1]
+                                        ),
+                                        scale=1)
             # Reweight
             if alternative_tempering == False:
-                log_w[i] = normal_logpdf(ys[t], loc=g(xs[i,t],theta), scale=var)
+                log_w[i] = normal_logpdf(ys[t], loc=Svensson2017NonLinearSSM_observation_mean(xs[i,t],theta), 
+                                                scale=var)
             else: # Alternatively, weigh according to f(y_1|x_1,theta,temp) = f(y_1|x_1,theta)^(1/temp)
-                log_w[i] = normal_logpdf(ys[t], loc=g(xs[i,t],theta), scale=var) / temp
+                log_w[i] = normal_logpdf(ys[t], loc=Svensson2017NonLinearSSM_observation_mean(xs[i,t],theta), 
+                                                scale=var) / temp
         
         
         # Recall: likelihood is prod_t=1^T 1/N * sum_n=1^N g(y_t|x_t^n,temp)
