@@ -2,11 +2,11 @@ import numpy as np
 import numba
 from numba import njit, prange
 from src.util import *
-from src.pf import *
-from src.ssm import *
+from src.linear_ssm.pf import *
+from src.linear_ssm.ssm import *
 
 
-""" Implementation of standard Metropolis-Hastings for the linear
+""" Implementation of exact Metropolis-Hastings for the linear
     state-space model from Svensson et al. (2017)
 """
 
@@ -72,6 +72,7 @@ def Svensson2017LinearSSM_mh(initial_theta, temp, ys, us, n_iters=1, proposal_sd
     return samples
 
 
+@njit
 def Svensson2017LinearSSM_log_prior(theta):
     """Returns the log of the prior distribution on the parameter.
     The prior is uniform on [0,2.5] x [-2.5,0].
@@ -81,13 +82,14 @@ def Svensson2017LinearSSM_log_prior(theta):
     theta : float
             Point at which to evaluate the log of the prior.
     """
-    if 0 <= theta[0] <= 2.5 and -2.5 <= theta[1] <= 0:
+    if -2.5 <= theta[0] <= 2.5 and -2.5 <= theta[1] <= 2.5:
         return 0.0
     else:
         return -np.inf
     
 
-def Svensson2017LinearSSM_sample_prior(size=1):
+@njit
+def Svensson2017LinearSSM_sample_prior():
     """Samples points from the prior distribution on theta.
     The prior is the uniform distribution on [0,2.5] x [-2.5,0].
     
@@ -96,46 +98,15 @@ def Svensson2017LinearSSM_sample_prior(size=1):
     size : int
            Number of points to sample.
     """
-    if size == 1:
-        return np.asarray([np.random.uniform(0, 2.5), np.random.uniform(-2.5,0)])
-    else:
-        return np.asarray([[np.random.uniform(0, 2.5), np.random.uniform(-2.5,0)] for _ in range(size)])
+    return np.asarray([np.random.uniform(-2.5, 2.5), np.random.uniform(-2.5,2.5)])
 
 
 """ Implementation of particle Metropolis-Hastings (PMH)
-for this state-space model.
+for the linear state-space model.
 """
 
 @njit
-def Svensson2017NonLinearSSM_log_prior(theta):
-    """Compute prior probability of observing
-    parameter theta.
-    
-    Parameters
-    -
-    theta : ndarray of shape (2,)
-            Parameter of state-space model
-    """
-    if 0 <= theta[0] <= 2 and 0 <= theta[1] <= 2:
-        return 0.0
-    else:
-        return -np.inf
-
-@njit
-def Svensson2017NonLinearSSM_sample_prior(n=1):
-    """Sample from uniform prior
-    on theta.
-    
-    Parameters
-    -
-    n : int
-        Number of samples to draw
-    """
-    return np.random.uniform(0,2,size=(n,2))
-
-
-@njit
-def Svensson2017NonLinearSSM_pmmh(
+def Svensson2017LinearSSM_pmmh(
     theta, 
     xs,
     aas,
@@ -149,7 +120,7 @@ def Svensson2017NonLinearSSM_pmmh(
     alternative_tempering=False
     ):
     """Draw samples from the posterior ``p(theta|y_1:T,temp)`` 
-    of the tempered non-linear state space model described above,
+    of the tempered linear state space model described above,
     using a random-walk particle Metropolis-Hastings algorithm with 
     bivariate normal proposal.
     
@@ -195,8 +166,11 @@ def Svensson2017NonLinearSSM_pmmh(
     T = len(ys) # Number of observations
     n_particles = xs.shape[0] # Number of particles
     n_accepts = 0 # Keep track of acceptance rate
-    var = 0.01 + temp # Observation variance after tempering
     
+    var = 0.0
+    if alternative_tempering == False: # Do not change this when power tempering
+        var += temp # Observation variance after tempering
+
     # Keep track of all samples, including the initial sample
     thetas = np.zeros(shape=(n_iters+1,2))
     thetas[0] = theta.flatten()
@@ -204,9 +178,9 @@ def Svensson2017NonLinearSSM_pmmh(
     log_liks = np.zeros(shape=(n_iters,)) # Keep track of sample log likelihoods
     
     # Keep track of all internal states, including the initial state
-    xss = np.zeros(shape=(n_iters+1,n_particles,T))
+    xss = np.zeros(shape=(n_iters+1,n_particles,T,2))
     aass = np.zeros(shape=(n_iters+1,n_particles,T-1),dtype=np.int64)
-    xss[0,:,:] = xs
+    xss[0,:,:,:] = xs
     aass[0,:,:] = aas
      
     for i in range(1,n_iters+1):
@@ -224,7 +198,7 @@ def Svensson2017NonLinearSSM_pmmh(
         ])
         
         # Run particle filter using this new parameter value
-        new_xss, new_aass, new_log_lik = Svensson2017NonLinearSSM_bootstrap_pf(
+        new_xss, new_aass, new_log_lik = Svensson2017LinearSSM_bootstrap_pf(
                                     temp=temp,
                                     n_particles=n_particles,
                                     ys=ys,
@@ -236,14 +210,14 @@ def Svensson2017NonLinearSSM_pmmh(
         d = np.random.uniform(0,1)
         
         # Compute log of the acceptance probability
-        log_alpha = new_log_lik + Svensson2017NonLinearSSM_log_prior(new_theta) - \
-                    log_lik - Svensson2017NonLinearSSM_log_prior(thetas[i-1])
+        log_alpha = new_log_lik + Svensson2017LinearSSM_log_prior(new_theta) - \
+                    log_lik - Svensson2017LinearSSM_log_prior(thetas[i-1])
         
         # If d < min(alpha,1), keep thetas[i], xss[:,:,i], aas[:,:,i] the same.
         # Otherwise, change them back to their previous values.
         if np.log(d) < min(log_alpha, 0):
             log_lik = new_log_lik
-            xss[i,:,:] = new_xss
+            xss[i,:,:,:] = new_xss
             aass[i,:,:] = new_aass
             thetas[i] = new_theta
             log_liks[i] = log_lik
@@ -251,15 +225,15 @@ def Svensson2017NonLinearSSM_pmmh(
         else:
             thetas[i] = thetas[i-1]
             log_liks[i] = log_lik
-            xss[i,:,:] = xss[i-1,:,:]
+            xss[i,:,:,:] = xss[i-1,:,:,:]
             aass[i,:,:] = aass[i-1,:,:]
     
     accept_rate = n_accepts / n_iters
-    return thetas[1:], xss[1:,:,:], aass[1:,:,:], log_liks, accept_rate
+    return thetas[1:], xss[1:,:,:,:], aass[1:,:,:], log_liks, accept_rate
 
 
 @njit
-def Svensson2017NonLinearSSM_pmmh_adaptive(
+def Svensson2017LinearSSM_pmmh_adaptive(
     theta, 
     xs,
     aas,
@@ -334,9 +308,9 @@ def Svensson2017NonLinearSSM_pmmh_adaptive(
     log_liks = np.zeros(shape=(n_iters,)) # Keep track of sample log likelihoods
     
     # Keep track of all internal states, including the initial state
-    xss = np.zeros(shape=(n_iters+1,n_particles,T))
+    xss = np.zeros(shape=(n_iters+1,n_particles,T,2))
     aass = np.zeros(shape=(n_iters+1,n_particles,T-1),dtype=np.int64)
-    xss[0,:,:] = xs
+    xss[0,:,:,:] = xs
     aass[0,:,:] = aas
      
     for i in range(1,n_iters+1):
@@ -357,7 +331,7 @@ def Svensson2017NonLinearSSM_pmmh_adaptive(
         ])
         
         # Run particle filter using this new parameter value
-        new_xss, new_aass, new_log_lik = Svensson2017NonLinearSSM_bootstrap_pf(
+        new_xss, new_aass, new_log_lik = Svensson2017LinearSSM_bootstrap_pf(
                                     temp=temp,
                                     n_particles=n_particles,
                                     ys=ys,
@@ -369,14 +343,14 @@ def Svensson2017NonLinearSSM_pmmh_adaptive(
         d = np.random.uniform(0,1)
         
         # Compute log of the acceptance probability
-        log_alpha = new_log_lik + Svensson2017NonLinearSSM_log_prior(new_theta) - \
-                    log_lik - Svensson2017NonLinearSSM_log_prior(thetas[i-1])
+        log_alpha = new_log_lik + Svensson2017LinearSSM_log_prior(new_theta) - \
+                    log_lik - Svensson2017LinearSSM_log_prior(thetas[i-1])
         
         # If d < min(alpha,1), keep thetas[i], xss[:,:,i], aas[:,:,i] the same.
         # Otherwise, change them back to their previous values.
         if np.log(d) < min(log_alpha, 0):
             log_lik = new_log_lik
-            xss[i,:,:] = new_xss
+            xss[i,:,:,:] = new_xss
             aass[i,:,:] = new_aass
             thetas[i] = new_theta
             log_liks[i] = log_lik
@@ -384,8 +358,8 @@ def Svensson2017NonLinearSSM_pmmh_adaptive(
         else:
             thetas[i] = thetas[i-1]
             log_liks[i] = log_lik
-            xss[i,:,:] = xss[i-1,:,:]
+            xss[i,:,:,:] = xss[i-1,:,:,:]
             aass[i,:,:] = aass[i-1,:,:]
     
     accept_rate = n_accepts / n_iters
-    return thetas[1:], xss[1:,:,:], aass[1:,:,:], log_liks, accept_rate
+    return thetas[1:], xss[1:,:,:,:], aass[1:,:,:], log_liks, accept_rate

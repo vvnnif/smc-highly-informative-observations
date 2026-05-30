@@ -1,12 +1,16 @@
+
 import numpy as np
 import numba
 from numba import njit, prange
-from src.util import *
-from src.ssm import *
 
+from src.linear_ssm.ssm import *
+from src.util import *
+
+""" Particle filter for the linear SSM in Svensson et al. (2017)
+"""
 
 @njit
-def Svensson2017NonLinearSSM_bootstrap_pf(temp, n_particles, ys, us, theta, alternative_tempering=False):
+def Svensson2017LinearSSM_bootstrap_pf(temp, n_particles, ys, us, theta, alternative_tempering=False):
     """ Bootstrap particle filter for the nonlinear
     state-space model defined above.
     
@@ -42,7 +46,7 @@ def Svensson2017NonLinearSSM_bootstrap_pf(temp, n_particles, ys, us, theta, alte
     theta = np.asarray(theta).reshape(2,)
     
     T = len(ys) # Number of observations
-    xs = np.zeros(shape=(n_particles,T)) # Particle storage
+    xs = np.zeros(shape=(n_particles,T,2)) # Particle storage
     aas = np.zeros(shape=(n_particles,T-1),dtype=np.int64) # Resampling storage
     
     # Baseline variance, only change if using the standard tempering scheme
@@ -54,7 +58,7 @@ def Svensson2017NonLinearSSM_bootstrap_pf(temp, n_particles, ys, us, theta, alte
 
     # Sample initial xs from ``p(x|theta)`` in the state-space model
     # Initial condition is just deterministically 0, so just set to 0
-    xs[:,0] = np.zeros(n_particles)
+    xs[:,0,:] = np.zeros((n_particles, 2))
 
     # Weight according to f(y_1|x_1,theta,temp) = N(|x_1| + theta1 * theta2, 0.01 + temp)
     # Recall: going from p(x|theta,temp) to p(x|y,theta,temp) = 
@@ -63,10 +67,10 @@ def Svensson2017NonLinearSSM_bootstrap_pf(temp, n_particles, ys, us, theta, alte
     for i in range(n_particles):
         
         if alternative_tempering == False:
-            log_w[i] = normal_logpdf(ys[0], loc=Svensson2017NonLinearSSM_observation_mean(xs[i,0],theta), 
+            log_w[i] = normal_logpdf(ys[0], loc=Svensson2017LinearSSM_observation_mean(xs[i,0,:],theta), 
                                             scale=var)
         else: # Alternatively, weigh according to f(y_1|x_1,theta,temp) = f(y_1|x_1,theta)^(1/temp)
-            log_w[i] = normal_logpdf(ys[0], loc=Svensson2017NonLinearSSM_observation_mean(xs[i,0],theta), 
+            log_w[i] = normal_logpdf(ys[0], loc=Svensson2017LinearSSM_observation_mean(xs[i,0,:],theta), 
                                             scale=var) / temp
     
     # Iterate over timesteps
@@ -84,19 +88,20 @@ def Svensson2017NonLinearSSM_bootstrap_pf(temp, n_particles, ys, us, theta, alte
         for i in range(n_particles):
             
             # Extend
-            xs[i,t] = np.random.normal(
-                                    loc=Svensson2017NonLinearSSM_transition_mean(
-                                        xs[aas[i,t-1],t-1],
+            mu = Svensson2017LinearSSM_transition_mean(
+                                        xs[aas[i,t-1],t-1,:],
                                         theta=theta,
-                                        u=us[t-1]
-                                        ),
-                                        scale=1)
+                                        u=us[t-1])
+            eps0 = np.random.normal()
+            eps1 = np.random.normal()
+            xs[i,t,:] = np.array([mu[0] + eps0, mu[1] + eps1])
+            
             # Reweight
             if alternative_tempering == False:
-                log_w[i] = normal_logpdf(ys[t], loc=Svensson2017NonLinearSSM_observation_mean(xs[i,t],theta), 
+                log_w[i] = normal_logpdf(ys[t], loc=Svensson2017LinearSSM_observation_mean(xs[i,t,:],theta), 
                                                 scale=var)
             else: # Alternatively, weigh according to f(y_1|x_1,theta,temp) = f(y_1|x_1,theta)^(1/temp)
-                log_w[i] = normal_logpdf(ys[t], loc=Svensson2017NonLinearSSM_observation_mean(xs[i,t],theta), 
+                log_w[i] = normal_logpdf(ys[t], loc=Svensson2017LinearSSM_observation_mean(xs[i,t,:],theta), 
                                                 scale=var) / temp
         
         
@@ -107,3 +112,4 @@ def Svensson2017NonLinearSSM_bootstrap_pf(temp, n_particles, ys, us, theta, alte
         log_lik += lse - np.log(n_particles) # Update log-likelihod
 
     return xs, aas, log_lik
+

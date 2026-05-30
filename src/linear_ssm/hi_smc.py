@@ -1,7 +1,5 @@
-
-
 """ Implementation of the complete algorithm described in
-Svensson et al., applied to their example nonlinear state-space
+Svensson et al., applied to their example linear state-space
 model.
 """
 
@@ -19,13 +17,17 @@ from concurrent.futures import ProcessPoolExecutor
 numba.config.FULL_TRACEBACKS = True
 
 from src.util import *
-from src.ssm import *
-from src.pf import *
-from src.mh import *
+from src.linear_ssm.ssm import *
+from src.linear_ssm.pf import *
+from src.linear_ssm.mh import *
 
+
+""" Implement SMC sampler for highly informative observations for
+linear model in Svensson et al. (2017)
+"""
 
 @njit
-def get_log_pos(temp, thetas, ys, xss, aass, alternative_tempering=False):
+def Svensson2017LinearSSM_log_pos(temp, thetas, ys, xss, aass, alternative_tempering=False):
     """ Compute the log of the
     posterior p(theta,(xs,aas)|temp,ys)
     up to proportionality.
@@ -54,11 +56,11 @@ def get_log_pos(temp, thetas, ys, xss, aass, alternative_tempering=False):
             proportionality, for theta in thetas
     """
     # recall xss.shape = (n_sample_particles,n_filter_particles,T)
-    n_sample_particles, n_filter_particles, T = xss.shape
+    n_sample_particles, n_filter_particles, T, _ = xss.shape
     
-    var = 0.01
+    var = 0.001
     if alternative_tempering == False: # Only change variance when using standard tempering scheme
-        var = 0.01 + temp 
+        var += temp 
     
     log_pos = np.zeros(n_sample_particles, dtype=np.float64)
     
@@ -75,10 +77,10 @@ def get_log_pos(temp, thetas, ys, xss, aass, alternative_tempering=False):
             # Calculate inner log-pdfs
             for n in range(n_filter_particles):
                 if alternative_tempering == False:
-                    inner[n] = normal_logpdf(y_t, loc=Svensson2017NonLinearSSM_observation_mean(xss[m, n, t], theta_m), 
+                    inner[n] = normal_logpdf(y_t, loc=Svensson2017LinearSSM_observation_mean(xss[m, n, t, :], theta_m), 
                                                 scale=var)
                 else: # Because f(y_1|x_1,theta,temp) = f(y_1|x_1,theta)^(1/temp) under alternative tempering scheme
-                    inner[n] = normal_logpdf(y_t, loc=Svensson2017NonLinearSSM_observation_mean(xss[m, n, t], theta_m), 
+                    inner[n] = normal_logpdf(y_t, loc=Svensson2017LinearSSM_observation_mean(xss[m, n, t, :], theta_m), 
                                                 scale=var) / temp
             
             lse = logsumexp(inner) 
@@ -89,10 +91,10 @@ def get_log_pos(temp, thetas, ys, xss, aass, alternative_tempering=False):
                 for n in range(n_filter_particles):
                     idx = aass[m, n, t]
                     if alternative_tempering == False:
-                        log_pos_m += normal_logpdf(y_t, loc=Svensson2017NonLinearSSM_observation_mean(xss[m, idx, t], theta_m), 
+                        log_pos_m += normal_logpdf(y_t, loc=Svensson2017LinearSSM_observation_mean(xss[m, idx, t, :], theta_m), 
                                                        scale=var) - lse
                     else:
-                        log_pos_m += (normal_logpdf(y_t, loc=Svensson2017NonLinearSSM_observation_mean(xss[m, idx, t], theta_m), 
+                        log_pos_m += (normal_logpdf(y_t, loc=Svensson2017LinearSSM_observation_mean(xss[m, idx, t, :], theta_m), 
                                                        scale=var) / temp) - lse
                     
         log_pos[m] = log_pos_m
@@ -101,7 +103,7 @@ def get_log_pos(temp, thetas, ys, xss, aass, alternative_tempering=False):
 
 
 @njit
-def bisect(prev_log_pos, 
+def Svensson2017LinearSSM_bisect(prev_log_pos, 
            thetas, 
            ys, 
            xss, 
@@ -157,7 +159,7 @@ def bisect(prev_log_pos,
     """
     
     # Evaluate lower bound
-    nxt_log_pos_lo = get_log_pos(lo, thetas, ys, xss, aass, alternative_tempering)
+    nxt_log_pos_lo = Svensson2017LinearSSM_log_pos(lo, thetas, ys, xss, aass, alternative_tempering)
     flo = ess(prev_log_pos, nxt_log_pos_lo) - c
     
     # Impossible in this case, return
@@ -165,7 +167,7 @@ def bisect(prev_log_pos,
         return lo, nxt_log_pos_lo
         
     # Evaluate upper bound
-    nxt_log_pos_hi = get_log_pos(hi, thetas, ys, xss, aass, alternative_tempering)
+    nxt_log_pos_hi = Svensson2017LinearSSM_log_pos(hi, thetas, ys, xss, aass, alternative_tempering)
     fhi = ess(prev_log_pos, nxt_log_pos_hi) - c
     
     # Impossible in this case, return
@@ -173,12 +175,12 @@ def bisect(prev_log_pos,
         return (lo + hi) / 2, nxt_log_pos_hi
 
     mid = (lo + hi) / 2
-    nxt_log_pos_mid = get_log_pos(mid, thetas, ys, xss, aass, alternative_tempering)
+    nxt_log_pos_mid = Svensson2017LinearSSM_log_pos(mid, thetas, ys, xss, aass, alternative_tempering)
 
     
     for i in range(max_iter):
         mid = (lo + hi) / 2
-        nxt_log_pos_mid = get_log_pos(mid, thetas, ys, xss, aass, alternative_tempering)
+        nxt_log_pos_mid = Svensson2017LinearSSM_log_pos(mid, thetas, ys, xss, aass, alternative_tempering)
         fmid = ess(prev_log_pos, nxt_log_pos_mid) - c
                 
         # Found midpoint
@@ -197,7 +199,7 @@ def bisect(prev_log_pos,
 
 
 @njit(parallel=True)
-def run_parallel_mutation(thetas, 
+def Svensson2017LinearSSM_parallel_mutate(thetas, 
                           xss, 
                           aass, 
                           log_liks, 
@@ -216,16 +218,16 @@ def run_parallel_mutation(thetas,
     if adaptive_pmh:
         # Do the adaptive Cholesky decomposition thing
         cov = np.cov(thetas, rowvar=False)
-        scaled_cov = (2.38**2 / 2.0) * cov + np.eye(2) * 1e-6
+        scaled_cov = (2.38 / np.sqrt(2.0)) * cov + np.eye(2) * 1e-6
         proposal_chol = np.linalg.cholesky(scaled_cov)
         
         for m in prange(n_samples):
             # We pass slices. Note: slicing the last dimension [:,:,m] is 
             # slow in NumPy but Numba handles it reasonably well.
             # Ensure particle_metropolis_hastings is @njit
-            theta_chain, xss_chain, aass_chain, log_lik_chain, acc = Svensson2017NonLinearSSM_pmmh_adaptive(
+            theta_chain, xss_chain, aass_chain, log_lik_chain, acc = Svensson2017LinearSSM_pmmh_adaptive(
                 theta=thetas[m],
-                xs=xss[m,:,:],
+                xs=xss[m,:,:,:],
                 aas=aass[m,:,:],
                 temp=temp,
                 log_lik=log_liks[m],
@@ -240,7 +242,7 @@ def run_parallel_mutation(thetas,
             # Update the main arrays with the last link in the MH chain
             thetas[m] = theta_chain[-1]
             log_liks[m] = log_lik_chain[-1]
-            xss[m,:,:] = xss_chain[-1,:,:]
+            xss[m,:,:,:] = xss_chain[-1,:,:,:]
             aass[m,:,:] = aass_chain[-1,:,:]
             accept_rates[m] = acc
             
@@ -251,9 +253,9 @@ def run_parallel_mutation(thetas,
             # We pass slices. Note: slicing the last dimension [:,:,m] is 
             # slow in NumPy but Numba handles it reasonably well.
             # Ensure particle_metropolis_hastings is @njit
-            theta_chain, xss_chain, aass_chain, log_lik_chain, acc = Svensson2017NonLinearSSM_pmmh(
+            theta_chain, xss_chain, aass_chain, log_lik_chain, acc = Svensson2017LinearSSM_pmmh(
                 theta=thetas[m],
-                xs=xss[m,:,:],
+                xs=xss[m,:,:,:],
                 aas=aass[m,:,:],
                 temp=temp,
                 log_lik=log_liks[m],
@@ -268,14 +270,14 @@ def run_parallel_mutation(thetas,
             # Update the main arrays with the last link in the MH chain
             thetas[m] = theta_chain[-1]
             log_liks[m] = log_lik_chain[-1]
-            xss[m,:,:] = xss_chain[-1,:,:]
+            xss[m,:,:,:] = xss_chain[-1,:,:,:]
             aass[m,:,:] = aass_chain[-1,:,:]
             accept_rates[m] = acc
 
     return accept_rates.mean()
 
 
-def Svensson2017NonLinearSSM_smc(ys, 
+def Svensson2017LinearSSM_smc(ys, 
                 us, 
                 initial_mh_iters, 
                 initial_mh_sd, 
@@ -291,7 +293,7 @@ def Svensson2017NonLinearSSM_smc(ys,
                 adaptive_pmh=False
                 ):
     """Tempered SMC sampler for approximate sampling from the
-    parameter posterior of the linear-Gaussian state space model
+    parameter posterior of the nonlinear state space model
     described in Svensson et al. (2017).
     
     Parameters
@@ -349,7 +351,7 @@ def Svensson2017NonLinearSSM_smc(ys,
     
     # Particle filter, because particle approximations of
     # p(y_t|x_1:T,theta,temp) are needed for PMH
-    xs, aas, log_lik = Svensson2017NonLinearSSM_bootstrap_pf(
+    xs, aas, log_lik = Svensson2017LinearSSM_bootstrap_pf(
                             n_particles=n_filter_particles,
                             temp=temp,
                             ys=ys,
@@ -359,7 +361,7 @@ def Svensson2017NonLinearSSM_smc(ys,
     
     # Draw the initial sample using PMH,
     # using a burn-in period of size initial_mh_iters - n_particles
-    thetas, xss, aass, log_liks, mean_accept_rate = Svensson2017NonLinearSSM_pmmh(
+    thetas, xss, aass, log_liks, mean_accept_rate = Svensson2017LinearSSM_pmmh(
                                         theta=theta,
                                         xs=xs,
                                         aas=aas,
@@ -373,13 +375,12 @@ def Svensson2017NonLinearSSM_smc(ys,
                                         alternative_tempering=alternative_tempering)
     thetas = thetas[-n_sample_particles:]
     log_liks = log_liks[-n_sample_particles:]
-    xss = xss[-n_sample_particles:,:,:]
+    xss = xss[-n_sample_particles:,:,:,:]
     aass = aass[-n_sample_particles:,:,:]
         
     ######## While tempering not sufficiently small... ########
     
     while temp > min_temp:
-        
         # Update diagnostics
         iteration_records[p] = {'temp': temp, 
                                 'particles': thetas,
@@ -395,7 +396,7 @@ def Svensson2017NonLinearSSM_smc(ys,
 
         # Compute proportional log posterior for all samples
         # under the current tempering
-        log_pos = get_log_pos(temp=temp,
+        log_pos = Svensson2017LinearSSM_log_pos(temp=temp,
                         thetas=thetas,
                         ys=ys,
                         xss=xss,
@@ -407,7 +408,7 @@ def Svensson2017NonLinearSSM_smc(ys,
 
         # Intersect with ess_target to
         # find next tempering parameter
-        temp, nxt_log_pos = bisect(prev_log_pos=log_pos,
+        temp, nxt_log_pos = Svensson2017LinearSSM_bisect(prev_log_pos=log_pos,
                           thetas=thetas,
                           ys=ys,
                           xss=xss,
@@ -433,7 +434,7 @@ def Svensson2017NonLinearSSM_smc(ys,
         # Resample
         thetas = thetas[idxs]
         log_liks = log_liks[idxs]
-        xss = xss[idxs,:,:]
+        xss = xss[idxs,:,:,:]
         aass = aass[idxs,:,:]
         
         ######## Mutate using PMH ########
@@ -443,7 +444,7 @@ def Svensson2017NonLinearSSM_smc(ys,
             t0 = time.time()
 
         # This one line replaces the entire mutation loop/pool logic
-        mean_accept_rate = run_parallel_mutation(
+        mean_accept_rate = Svensson2017LinearSSM_parallel_mutate(
                                             thetas=thetas, 
                                             xss=xss, 
                                             aass=aass, 
