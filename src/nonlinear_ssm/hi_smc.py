@@ -58,48 +58,59 @@ def Svensson2017NonLinearSSM_log_pos(temp, thetas, ys, xss, aass, alternative_te
     # recall xss.shape = (n_sample_particles,n_filter_particles,T)
     n_sample_particles, n_filter_particles, T = xss.shape
     
-    var = 0.01
-    if alternative_tempering == False: # Only change variance when using standard tempering scheme
-        var = 0.01 + temp 
-    
-    log_pos = np.zeros(n_sample_particles, dtype=np.float64)
-    
-    # Avoids unnecessary allocations
-    inner = np.empty(n_filter_particles, dtype=np.float64)
-    
-    for m in range(n_sample_particles):
-        theta_m = thetas[m]
-        log_pos_m = 0.0
+    var = 0.01        
+    if alternative_tempering: # This is simpler when doing power tempering only
         
-        for t in range(T):
-            y_t = ys[t]
+        beta = 1.0 - temp
+        log_pos = np.zeros(n_sample_particles, dtype=np.float64)
+        inner = np.empty(n_filter_particles, dtype=np.float64)
+
+        for m in range(n_sample_particles):
+            theta_m = thetas[m]
+            log_pos_m = 0.0
+            for t in range(T):
+                # Calculate inner log-pdfs
+                for n in range(n_filter_particles):
+                    inner[n] = normal_logpdf(ys[t], loc=Svensson2017NonLinearSSM_observation_mean(xss[m, n, t], theta_m), 
+                                                scale=var)
+                lse = logsumexp(inner) 
+                log_pos_m += lse
+            log_pos[m] = beta * log_pos_m
+        return log_pos
+    
+    else:
+        
+        var += temp
+        log_pos = np.zeros(n_sample_particles, dtype=np.float64)
+        
+        # Avoids unnecessary allocations
+        inner = np.empty(n_filter_particles, dtype=np.float64)
+        
+        for m in range(n_sample_particles):
+            theta_m = thetas[m]
+            log_pos_m = 0.0
             
-            # Calculate inner log-pdfs
-            for n in range(n_filter_particles):
-                if alternative_tempering == False:
+            for t in range(T):
+                y_t = ys[t]
+                
+                # Calculate inner log-pdfs
+                for n in range(n_filter_particles):
                     inner[n] = normal_logpdf(y_t, loc=Svensson2017NonLinearSSM_observation_mean(xss[m, n, t], theta_m), 
                                                 scale=var)
-                else: # Because f(y_1|x_1,theta,temp) = f(y_1|x_1,theta)^(1/temp) under alternative tempering scheme
-                    inner[n] = normal_logpdf(y_t, loc=Svensson2017NonLinearSSM_observation_mean(xss[m, n, t], theta_m), 
-                                                scale=var) / temp
-            
-            lse = logsumexp(inner) 
-            log_pos_m += lse
+                
+                lse = logsumexp(inner) 
+                log_pos_m += lse
 
-            # Second term for 0 to T-2
-            if t < T - 1:
-                for n in range(n_filter_particles):
-                    idx = aass[m, n, t]
-                    if alternative_tempering == False:
+                # Second term for 0 to T-2
+                if t < T - 1:
+                    for n in range(n_filter_particles):
+                        idx = aass[m, n, t]
                         log_pos_m += normal_logpdf(y_t, loc=Svensson2017NonLinearSSM_observation_mean(xss[m, idx, t], theta_m), 
-                                                       scale=var) - lse
-                    else:
-                        log_pos_m += (normal_logpdf(y_t, loc=Svensson2017NonLinearSSM_observation_mean(xss[m, idx, t], theta_m), 
-                                                       scale=var) / temp) - lse
-                    
-        log_pos[m] = log_pos_m
-        
-    return log_pos
+                                                        scale=var) - lse
+                        
+            log_pos[m] = log_pos_m
+            
+        return log_pos
 
 
 @njit
@@ -401,7 +412,8 @@ def Svensson2017NonLinearSSM_smc(ys,
                         thetas=thetas,
                         ys=ys,
                         xss=xss,
-                        aass=aass)
+                        aass=aass,
+                        alternative_tempering=alternative_tempering)
 
         if verbose:
             print(f'Starting bisection...')

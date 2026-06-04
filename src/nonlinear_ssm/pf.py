@@ -64,12 +64,8 @@ def Svensson2017NonLinearSSM_bootstrap_pf(temp, n_particles, ys, us, theta, alte
     # Recall: so up to x-proportionality, dQ(x)/dM(x) = f(y|x,theta,temp)    
     for i in range(n_particles):
         
-        if alternative_tempering == False:
             log_w[i] = normal_logpdf(ys[0], loc=Svensson2017NonLinearSSM_observation_mean(xs[i,0],theta), 
                                             scale=var)
-        else: # Alternatively, weigh according to f(y_1|x_1,theta,temp) = f(y_1|x_1,theta)^(1/temp)
-            log_w[i] = normal_logpdf(ys[0], loc=Svensson2017NonLinearSSM_observation_mean(xs[i,0],theta), 
-                                            scale=var) / temp
     
     # Iterate over timesteps
     lse = logsumexp(log_w) # Store logsumexp, use later
@@ -94,12 +90,8 @@ def Svensson2017NonLinearSSM_bootstrap_pf(temp, n_particles, ys, us, theta, alte
                                         ),
                                         scale=1)
             # Reweight
-            if alternative_tempering == False:
-                log_w[i] = normal_logpdf(ys[t], loc=Svensson2017NonLinearSSM_observation_mean(xs[i,t],theta), 
-                                                scale=var)
-            else: # Alternatively, weigh according to f(y_1|x_1,theta,temp) = f(y_1|x_1,theta)^(1/temp)
-                log_w[i] = normal_logpdf(ys[t], loc=Svensson2017NonLinearSSM_observation_mean(xs[i,t],theta), 
-                                                scale=var) / temp
+            log_w[i] = normal_logpdf(ys[t], loc=Svensson2017NonLinearSSM_observation_mean(xs[i,t],theta), 
+                                            scale=var)
         
         
         # Recall: likelihood is prod_t=1^T 1/N * sum_n=1^N g(y_t|x_t^n,temp)

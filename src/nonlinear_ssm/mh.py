@@ -142,9 +142,14 @@ def Svensson2017NonLinearSSM_pmmh(
         d = np.random.uniform(0,1)
         
         # Compute log of the acceptance probability
-        log_alpha = new_log_lik + Svensson2017NonLinearSSM_log_prior(new_theta) - \
-                    log_lik - Svensson2017NonLinearSSM_log_prior(thetas[i-1])
-        
+        if alternative_tempering: # Do power tempering
+            beta = 1.0 - temp
+            log_alpha = beta * new_log_lik + Svensson2017NonLinearSSM_log_prior(new_theta) - \
+                        beta * log_lik - Svensson2017NonLinearSSM_log_prior(thetas[i-1])
+        else:
+            log_alpha = new_log_lik + Svensson2017NonLinearSSM_log_prior(new_theta) - \
+                        log_lik - Svensson2017NonLinearSSM_log_prior(thetas[i-1])
+
         # If d < min(alpha,1), keep thetas[i], xss[:,:,i], aas[:,:,i] the same.
         # Otherwise, change them back to their previous values.
         if np.log(d) < min(log_alpha, 0):

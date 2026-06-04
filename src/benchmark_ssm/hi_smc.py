@@ -58,47 +58,57 @@ def SimpleBenchmarkSSM_log_pos(temp, thetas, ys, xss, aass, alternative_temperin
     n_sample_particles, n_filter_particles, T = xss.shape
     
     var = 0.001
-    if alternative_tempering == False: # Only change variance when using standard tempering scheme
-        var += temp 
-    
-    log_pos = np.zeros(n_sample_particles, dtype=np.float64)
-    
-    # Avoids unnecessary allocations
-    inner = np.empty(n_filter_particles, dtype=np.float64)
-    
-    for m in range(n_sample_particles):
-        theta_m = thetas[m]
-        log_pos_m = 0.0
+    if alternative_tempering: # This is simpler when doing power tempering only
+        beta = 1.0 - temp
+        log_pos = np.zeros(n_sample_particles, dtype=np.float64)
+        inner = np.empty(n_filter_particles, dtype=np.float64)
+
+        for m in range(n_sample_particles):
+            theta_m = thetas[m]
+            log_pos_m = 0.0
+            for t in range(T):
+                # Calculate inner log-pdfs
+                for n in range(n_filter_particles):
+                    inner[n] = normal_logpdf(ys[t], loc=SimpleBenchmarkSSM_observation_mean(xss[m, n, t], theta_m), 
+                                                scale=var)
+                lse = logsumexp(inner) 
+                log_pos_m += lse
+            log_pos[m] = beta * log_pos_m
+        return log_pos
+    else:
         
-        for t in range(T):
-            y_t = ys[t]
+        var += temp 
+        log_pos = np.zeros(n_sample_particles, dtype=np.float64)
+        
+        # Avoids unnecessary allocations
+        inner = np.empty(n_filter_particles, dtype=np.float64)
+        
+        for m in range(n_sample_particles):
+            theta_m = thetas[m]
+            log_pos_m = 0.0
             
-            # Calculate inner log-pdfs
-            for n in range(n_filter_particles):
-                if alternative_tempering == False:
+            for t in range(T):
+                y_t = ys[t]
+                
+                # Calculate inner log-pdfs
+                for n in range(n_filter_particles):
                     inner[n] = normal_logpdf(y_t, loc=SimpleBenchmarkSSM_observation_mean(xss[m, n, t], theta_m), 
                                                 scale=var)
-                else: # Because f(y_1|x_1,theta,temp) = f(y_1|x_1,theta)^(1/temp) under alternative tempering scheme
-                    inner[n] = normal_logpdf(y_t, loc=SimpleBenchmarkSSM_observation_mean(xss[m, n, t], theta_m), 
-                                                scale=var) / temp
-            
-            lse = logsumexp(inner) 
-            log_pos_m += lse
+                
+                
+                lse = logsumexp(inner) 
+                log_pos_m += lse
 
-            # Second term for 0 to T-2
-            if t < T - 1:
-                for n in range(n_filter_particles):
-                    idx = aass[m, n, t]
-                    if alternative_tempering == False:
+                # Second term for 0 to T-2
+                if t < T - 1:
+                    for n in range(n_filter_particles):
+                        idx = aass[m, n, t]
                         log_pos_m += normal_logpdf(y_t, loc=SimpleBenchmarkSSM_observation_mean(xss[m, idx, t], theta_m), 
-                                                       scale=var) - lse
-                    else:
-                        log_pos_m += (normal_logpdf(y_t, loc=SimpleBenchmarkSSM_observation_mean(xss[m, idx, t], theta_m), 
-                                                       scale=var) / temp) - lse
-                    
-        log_pos[m] = log_pos_m
-        
-    return log_pos
+                                                        scale=var) - lse
+                        
+            log_pos[m] = log_pos_m
+            
+        return log_pos
 
 
 @njit
@@ -171,7 +181,13 @@ def SimpleBenchmarkSSM_bisect(prev_log_pos,
     
     # Impossible in this case, return
     if flo * fhi > 0:
-        return (lo + hi) / 2, nxt_log_pos_hi
+        # If even hi is below target, do not move.
+        if fhi < 0:
+            return hi, nxt_log_pos_hi
+
+        # Otherwise lo and hi are both above target; go to lo.
+        if flo > 0:
+            return lo, nxt_log_pos_lo
 
     mid = (lo + hi) / 2
     nxt_log_pos_mid = SimpleBenchmarkSSM_log_pos(mid, thetas, ys, xss, aass, alternative_tempering)
@@ -316,36 +332,46 @@ def SimpleBenchmarkSSM_smc(ys,
 
     ######## Initial sample ########
     
-    theta = SimpleBenchmarkSSM_sample_prior() # Starting parameter from prior
-    
-    # Particle filter, because particle approximations of
-    # p(y_t|x_1:T,theta,temp) are needed for PMH
-    xs, aas, log_lik = SimpleBenchmarkSSM_bootstrap_pf(
-                            n_particles=n_filter_particles,
-                            temp=temp,
-                            ys=ys,
-                            us=us,
-                            theta=theta,
-                            alternative_tempering=alternative_tempering)
-    
-    # Draw the initial sample using PMH,
-    # using a burn-in period of size initial_mh_iters - n_particles
-    thetas, xss, aass, log_liks, mean_accept_rate = SimpleBenchmarkSSM_pmmh(
-                                        theta=theta,
-                                        xs=xs,
-                                        aas=aas,
-                                        temp=temp,
-                                        log_lik=log_lik,
-                                        us=us,
-                                        ys=ys,
-                                        n_iters=initial_mh_iters,
-                                        proposal_sd=initial_mh_sd,
-                                        verbose=False,
-                                        alternative_tempering=alternative_tempering)
-    thetas = thetas[-n_sample_particles:]
-    log_liks = log_liks[-n_sample_particles:]
-    xss = xss[-n_sample_particles:,:,:]
-    aass = aass[-n_sample_particles:,:,:]
+    thetas = np.empty(n_sample_particles, dtype=np.float64)
+    log_liks = np.empty(n_sample_particles, dtype=np.float64)
+    xss = np.empty((n_sample_particles, n_filter_particles, T), dtype=np.float64)
+    aass = np.empty((n_sample_particles, n_filter_particles, T - 1), dtype=np.int64)
+
+    accept_rates = np.empty(n_sample_particles, dtype=np.float64)
+
+    for m in range(n_sample_particles):
+        theta0 = SimpleBenchmarkSSM_sample_prior()
+
+        xs0, aas0, log_lik0 = SimpleBenchmarkSSM_bootstrap_pf(
+            n_particles=n_filter_particles,
+            temp=temp,
+            ys=ys,
+            us=us,
+            theta=theta0,
+            alternative_tempering=alternative_tempering,
+        )
+
+        theta_chain, xss_chain, aass_chain, log_lik_chain, acc = SimpleBenchmarkSSM_pmmh(
+            theta=theta0,
+            xs=xs0,
+            aas=aas0,
+            temp=temp,
+            log_lik=log_lik0,
+            us=us,
+            ys=ys,
+            n_iters=initial_mh_iters,
+            proposal_sd=initial_mh_sd,
+            verbose=False,
+            alternative_tempering=alternative_tempering,
+        )
+
+        thetas[m] = theta_chain[-1]
+        log_liks[m] = log_lik_chain[-1]
+        xss[m, :, :] = xss_chain[-1, :, :]
+        aass[m, :, :] = aass_chain[-1, :, :]
+        accept_rates[m] = acc
+
+    mean_accept_rate = np.mean(accept_rates)
         
     ######## While tempering not sufficiently small... ########
     
@@ -370,7 +396,8 @@ def SimpleBenchmarkSSM_smc(ys,
                         thetas=thetas,
                         ys=ys,
                         xss=xss,
-                        aass=aass)
+                        aass=aass,
+                        alternative_tempering=alternative_tempering)
 
         if verbose:
             print(f'Starting bisection...')

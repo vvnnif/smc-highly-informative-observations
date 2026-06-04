@@ -106,6 +106,7 @@ def SimpleBenchmarkSSM_pmmh(
     
     # Keep track of all samples, including the initial sample
     thetas = np.zeros(shape=(n_iters+1,))
+    thetas[0] = theta
 
     log_liks = np.zeros(shape=(n_iters,)) # Keep track of sample log likelihoods
     
@@ -136,9 +137,15 @@ def SimpleBenchmarkSSM_pmmh(
         # Sample value uniform on [0,1]
         d = np.random.uniform(0,1)
         
-        # Compute log of the acceptance probability
-        log_alpha = new_log_lik + SimpleBenchmarkSSM_log_prior(new_theta) - \
-                    log_lik - SimpleBenchmarkSSM_log_prior(thetas[i-1])
+        if alternative_tempering == True: # Target the power-tempered posterior
+            # Compute log of the acceptance probability
+            beta = 1.0 - temp # Wacky change, but we want temp to stay decreasing for quick convenience
+            log_alpha = beta * new_log_lik + SimpleBenchmarkSSM_log_prior(new_theta) - \
+                        beta * log_lik - SimpleBenchmarkSSM_log_prior(thetas[i-1])
+        else:
+            # Compute log of the acceptance probability
+            log_alpha = new_log_lik + SimpleBenchmarkSSM_log_prior(new_theta) - \
+                        log_lik - SimpleBenchmarkSSM_log_prior(thetas[i-1])
         
         # If d < min(alpha,1), keep thetas[i], xss[:,:,i], aas[:,:,i] the same.
         # Otherwise, change them back to their previous values.
